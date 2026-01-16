@@ -1,0 +1,5 @@
+cocotb
+cocotb-test
+cocotbext-spi
+pytest
+cryptography

@@ -1,0 +1,27 @@
+Metadata-Version: 2.4
+Name: cocotb-bus
+Version: 0.3.0
+Home-page: https://github.com/cocotb/cocotb-bus
+Author: cocotb maintainers
+Author-email: cocotb@lists.librecores.org
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: cocotb>=1.6.0
+Requires-Dist: scapy
+Dynamic: author
+Dynamic: author-email
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: requires-python
+
+# cocotb-bus
+
+[![ReadTheDocs](https://app.readthedocs.org/projects/cocotb-bus/badge/?version=latest)](https://cocotb-bus.readthedocs.io/en/latest/)
+[![PyPI](https://img.shields.io/pypi/dm/cocotb-bus.svg?label=PyPI%20downloads)](https://pypi.org/project/cocotb-bus/)
+
+**cocotb-bus** contains pre-packaged testbenching tools and
+reusable bus interfaces for [cocotb](https://cocotb.org).

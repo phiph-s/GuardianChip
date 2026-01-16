@@ -1,0 +1,132 @@
+@startuml system_architecture
+!theme plain
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title LAYR Guardian Chip - System Architecture (main_core.v)
+
+package "External Hardware" {
+  [MFRC522 NFC Reader] as NFC_HW
+  [AT25010 EEPROM] as EEPROM_HW
+  [Door Lock] as DOOR
+  [Status LEDs] as LEDS
+  [Start Button] as BTN
+}
+
+package "main_core" {
+  
+  package "Card Detection" {
+    component [nfc_card_detector\n====\nState Machine:\n- IDLE\n- SEND_REQA\n- WAIT_ATQA\n- SEND_ANTICOLL\n- WAIT_UID\n- SEND_SELECT\n- WAIT_SAK\n- CARD_READY\n----\nISO14443A Protocol:\n- Request Type A (REQA)\n- Anti-collision\n- Card Selection\n- UID Extraction] as DETECTOR
+  }
+  
+  package "Authentication" {
+    component [auth_controller\n====\nState Machine:\n- IDLE\n- LOAD_KEY_START\n- AUTH_INIT_SEND\n- DECRYPT_RC\n- GEN_NONCE\n- ENCRYPT_AUTH\n- DERIVE_SESSION_KEY\n- GET_ID_SEND\n- DECRYPT_ID\n- SUCCESS/FAILED\n----\nLAYR Protocol:\n- CMD_AUTH_INIT (0x8010)\n- CMD_AUTH (0x8011)\n- CMD_GET_ID (0x8012)\n- Challenge-Response\n- Session Key Derivation] as AUTH
+  }
+  
+  package "Cryptography" {
+    component [aes_core\n====\nAES-128 ECB\n- Encrypt Mode\n- Decrypt Mode\n----\nComponents:\n- AES_Encrypt\n- AES_Decrypt\n- Combinational Logic] as AES
+    
+    component [nonce_generator\n====\nRandom Number Gen\n- 64-bit LFSR\n- Free-running counter\n- XOR mixing] as NONCE
+  }
+  
+  package "Communication Interfaces" {
+    component [mfrc522_interface\n====\nMFRC522 SPI Protocol\n- Register Read/Write\n- FIFO Operations\n- SPI Mode 0\n----\nState Machine:\n- IDLE\n- START_XFER\n- SEND_DATA\n- DONE] as NFC_IF
+    
+    component [at25010_interface\n====\nAT25010 Commands\n- WREN/WRDI\n- READ/WRITE\n- RDSR/WRSR\n----\nState Machine:\n- IDLE\n- START_XFER\n- SEND_BYTES\n- WRITE_DELAY\n- DONE] as EEPROM_IF
+    
+    component [SPI_Master_With_Single_CS\n====\nSPI Master Core\n- Configurable Clock\n- CS Control\n- Full Duplex] as SPI_NFC
+    
+    component [SPI_Master_With_Single_CS\n====\nSPI Master Core\n- Configurable Clock\n- CS Control\n- Full Duplex] as SPI_EEPROM
+  }
+  
+  package "Control Logic" {
+    component [NFC Arbiter\n====\nMultiplexer\nDetector priority during detection\nAuth priority during auth] as ARB
+    
+    component [Key Storage Logic\n====\nState Machine:\n- KEY_IDLE\n- KEY_READ_START\n- KEY_READ_WAIT\n- KEY_READ_DONE\n----\nSequential 16-byte key loading] as KEY_LOGIC
+    
+    component [Timeout Watchdog\n====\nTimeout Counter\n1 second timeout\n(100M cycles @ 100MHz)] as TIMEOUT
+    
+    component [Door Unlock Control\n====\nTimer Logic\nUnlock duration: 5 seconds\n(500M cycles @ 100MHz)\n----\nTriggers on auth_success] as UNLOCK
+  }
+}
+
+' === External Connections ===
+BTN --> DETECTOR : nfc_irq\n(simulated)
+NFC_HW <--> NFC_IF : SPI\n(CS, SCLK, MOSI, MISO)
+EEPROM_HW <--> EEPROM_IF : SPI\n(CS, SCLK, MOSI, MISO)
+UNLOCK --> DOOR : door_unlock
+UNLOCK --> LEDS : status_unlock
+AUTH --> LEDS : status_fault
+AUTH --> LEDS : status_busy
+
+' === Card Detection Flow ===
+DETECTOR --> ARB : det_nfc_cmd_*\n(valid, write, addr, wdata)
+DETECTOR --> AUTH : start_auth\n(card_ready trigger)
+DETECTOR -.-> DETECTOR : card_detected\ncard_uid[31:0]\ncard_ready
+
+' === Authentication Flow ===
+AUTH --> ARB : auth_nfc_cmd_*\n(valid, write, addr, wdata)
+AUTH --> AES : aes_start\naes_mode\naes_key[127:0]\naes_block_in[127:0]
+AES --> AUTH : aes_block_out[127:0]\naes_done
+AUTH --> NONCE : nonce_req
+NONCE --> AUTH : nonce[63:0]\nnonce_valid
+AUTH --> KEY_LOGIC : key_load_req\nkey_addr[6:0]
+KEY_LOGIC --> AUTH : key_data[7:0]\nkey_data_valid
+AUTH --> TIMEOUT : timeout_start
+TIMEOUT --> AUTH : timeout_occurred
+AUTH --> UNLOCK : auth_success\ncard_id[127:0]\ncard_id_valid
+
+' === NFC Communication Path ===
+ARB --> NFC_IF : nfc_cmd_valid\nnfc_cmd_write\nnfc_cmd_addr[5:0]\nnfc_cmd_wdata[7:0]
+NFC_IF --> ARB : nfc_cmd_ready\nnfc_cmd_rdata[7:0]\nnfc_cmd_done
+NFC_IF --> SPI_NFC : TX/RX Control
+SPI_NFC --> NFC_IF : SPI Status
+
+' === EEPROM Communication Path ===
+KEY_LOGIC --> EEPROM_IF : eeprom_cmd_valid\neeprom_cmd_type[2:0]\neeprom_cmd_addr[6:0]
+EEPROM_IF --> KEY_LOGIC : eeprom_cmd_rdata[7:0]\neeprom_cmd_done\neeprom_cmd_ready
+EEPROM_IF --> SPI_EEPROM : TX/RX Control
+SPI_EEPROM --> EEPROM_IF : SPI Status
+
+' === Internal Data Structures ===
+note right of AUTH
+  Internal Registers:
+  - psk[127:0] - Pre-shared key
+  - rc[63:0] - Card challenge
+  - rt[63:0] - Terminal challenge  
+  - session_key[127:0]
+  - encrypted_rc[127:0]
+  - encrypted_id[127:0]
+  - card_id[127:0]
+end note
+
+note right of DETECTOR
+  Internal Registers:
+  - uid_buffer[31:0]
+  - atqa_response[15:0]
+  - sak_response[7:0]
+  - retry_count[3:0]
+end note
+
+note right of AES
+  Crypto Operations:
+  - Instantiates both
+    AES_Encrypt and
+    AES_Decrypt
+  - Selects output via
+    mode signal
+  - 1-cycle latency
+end note
+
+note bottom of UNLOCK
+  Access Control:
+  Unlock duration parameter
+  configurable at instantiation
+  Default: 5 seconds
+  
+  TODO: Verify card_id
+  against authorized list
+  in EEPROM
+end note
+
+@enduml

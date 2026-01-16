@@ -1,0 +1,135 @@
+@startuml Authentication Sequence with NFC Detection
+title Guardian Chip - Complete Authentication Sequence with ISO14443A Detection
+
+participant "NFC Card" as Card
+participant "MFRC522\nNFC Reader" as NFC
+participant "NFC Card\nDetector" as Detector
+participant "Auth\nController" as Auth
+participant "AES Core" as AES
+participant "EEPROM\n(AT25010)" as EEPROM
+participant "Door Lock" as Door
+
+== Card Presence ==
+Card -> NFC: Card enters RF field
+activate NFC
+NFC -> NFC: IRQ signal triggered
+note right: Card detected in field
+
+== ISO14443A Card Detection ==
+NFC -> Detector: nfc_irq = HIGH
+activate Detector
+note right of Detector: IRQ edge detected\nState: IDLE → SEND_REQA
+
+Detector -> NFC: WRITE REQA (0x26)
+note right: ISO14443A Request Type A
+NFC -> Card: RF: REQA command
+Card -> NFC: RF: ATQA (0x0004)
+NFC -> Detector: READ: ATQA = 0x0004
+note right of Detector: MIFARE Classic detected\nState: CHECK_ATQA → SEND_ANTICOLL
+
+Detector -> NFC: WRITE ANTICOLL (0x93)
+note right: Anti-collision command
+NFC -> Card: RF: ANTICOLL
+Card -> NFC: RF: UID (4 bytes)
+NFC -> Detector: READ: UID = 0x01020304
+note right of Detector: UID received\nState: CHECK_UID → SEND_SELECT
+
+Detector -> NFC: WRITE SELECT (0x93)
+note right: Select card with UID
+NFC -> Card: RF: SELECT
+Card -> NFC: RF: SAK (0x08)
+NFC -> Detector: READ: SAK = 0x08
+note right of Detector: Card selected successfully!\nState: CARD_READY
+
+Detector -> Auth: start_auth = HIGH
+note right: Card ready,\ntrigger authentication
+deactivate Detector
+
+== LAYR Authentication Protocol ==
+
+Auth -> EEPROM: Read PSK (16 bytes)
+activate Auth
+activate EEPROM
+EEPROM -> Auth: PSK = 0x2b7e1516...
+deactivate EEPROM
+note right of Auth: Pre-Shared Key loaded\nState: LOAD_KEY → AUTH_INIT
+
+Auth -> NFC: WRITE AUTH_INIT (0x80)
+note right: LAYR protocol:\nInitiate authentication
+NFC -> Card: RF: AUTH_INIT
+activate Card
+Card -> Card: Generate nonce (rc)
+note right of Card: rc = random 8 bytes\n+ 8 bytes padding
+
+Card -> Card: Encrypt challenge
+note right of Card: challenge = AES_PSK(rc || padding)
+Card -> NFC: RF: Encrypted challenge (16 bytes)
+NFC -> Auth: READ: challenge (16 bytes)
+note right of Auth: State: AUTH_INIT_READ (16x)\n→ DECRYPT_RC
+
+Auth -> AES: Decrypt challenge
+activate AES
+note right: mode = DECRYPT\nkey = PSK
+AES -> Auth: Decrypted = rc || padding
+deactivate AES
+note right of Auth: Extract rc from decrypted\nVerify padding = 0x00...
+
+alt Padding Valid (Correct Key)
+    note right of Auth: ✓ Card has correct PSK\nState: NONCE_GEN
+    
+    Auth -> Auth: Generate rt (8 bytes)
+    note right of Auth: rt = nonce_generator\n(LFSR-based)
+    
+    Auth -> Auth: Compute session key
+    note right of Auth: session_key = \nAES_PSK(rc XOR rt)
+    
+    Auth -> AES: Encrypt response
+    note right: plaintext = rt || padding\nkey = PSK
+    AES -> Auth: auth_response
+    
+    Auth -> NFC: WRITE AUTH (auth_response)
+    note right: Send encrypted rt\nState: AUTH_SEND
+    NFC -> Card: RF: AUTH response
+    
+    Card -> Card: Decrypt & verify
+    note right of Card: Decrypt with PSK\nExtract rt\nCompute session_key
+    
+    Card -> Card: Encrypt card_id
+    note right of Card: encrypted_id = \nAES_session_key(card_id)
+    
+    Auth -> NFC: WRITE GET_ID
+    note right: Request encrypted ID\nState: GET_ID_SEND
+    NFC -> Card: RF: GET_ID
+    Card -> NFC: RF: Encrypted ID (16 bytes)
+    NFC -> Auth: READ: Encrypted ID
+    
+    Auth -> AES: Decrypt ID
+    AES -> Auth: card_id
+    deactivate AES
+    
+    Auth -> Auth: Store card_id
+    note right of Auth: Authentication successful!\nState: SUCCESS
+    
+    Auth -> Door: door_unlock = HIGH
+    activate Door
+    note right: Status LED: GREEN\nDoor unlocked for 10s
+    
+    ... Door unlock duration ...
+    
+    Door -> Door: Auto-lock after timeout
+    deactivate Door
+    Auth -> Auth: State: IDLE
+    
+else Padding Invalid (Wrong Key)
+    note right of Auth: ✗ Card has wrong PSK\nState: FAILED
+    
+    Auth -> Auth: status_fault = HIGH
+    note right: Status LED: RED\nAuthentication rejected
+    
+    Auth -> Auth: State: IDLE
+    deactivate Card
+end
+
+deactivate Auth
+
+@enduml
