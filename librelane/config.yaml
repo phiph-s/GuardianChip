@@ -122,12 +122,12 @@ CLOCK_PERIOD: 20
 FP_SIZING: absolute
 # 3880umx5070um including 26um
 # for the sealring on all sides
-DIE_AREA: [0, 0, 1600, 1600]
-CORE_AREA: [365, 365, 1235, 1235]
+DIE_AREA:  [0, 0, 2800, 2800]
+CORE_AREA: [450, 450, 2350, 2350]
 
 # Increase for more logic
 # on your die
-PL_TARGET_DENSITY_PCT: 10
+PL_TARGET_DENSITY_PCT: 55
 GRT_ALLOW_CONGESTION: true
 
 # PDN
