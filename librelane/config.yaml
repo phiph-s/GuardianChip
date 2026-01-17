@@ -62,59 +62,40 @@ VERILOG_FILES:
 PRIMARY_GDSII_STREAMOUT_TOOL: klayout
 
 # Specify the pad instances for the padring
-PAD_SOUTH: [
-    clk_pad,
-    rst_n_pad,
+PAD_WEST: [
+  rst_pad,
+  sys_clk_pad,
+  uart_clk_pad,
+  user_io_0_pad,
+  uart_rx_pad,
+  uart_tx_pad
+]
 
-    "bidirs\\[0\\].bidir_pad",
-    "bidirs\\[1\\].bidir_pad",
-    "bidirs\\[2\\].bidir_pad",
-    "bidirs\\[3\\].bidir_pad",
-    "bidirs\\[4\\].bidir_pad",
-    "bidirs\\[5\\].bidir_pad",
-    "bidirs\\[6\\].bidir_pad",
-    "bidirs\\[7\\].bidir_pad"
+PAD_SOUTH: [
+  user_io_1_pad,
+  user_io_2_pad,
+  user_io_3_pad,
+  user_io_4_pad,
+  vdd_pad_0,
+  vss_pad_0
 ]
 
 PAD_EAST: [
-    "analogs\\[0\\].analog_pad",
-    "analogs\\[1\\].analog_pad",
-    "analogs\\[2\\].analog_pad",
-    "analogs\\[3\\].analog_pad",
-    "analogs\\[4\\].analog_pad",
-    "analogs\\[5\\].analog_pad",
-    "analogs\\[6\\].analog_pad",
-    "analogs\\[7\\].analog_pad",
-    
-    "vdd_pads\\[0\\].vdd_pad",
-    "vss_pads\\[0\\].vss_pad"
+  cs_1_pad,
+  cs_0_pad,
+  spi_miso_pad,
+  spi_mosi_pad,
+  spi_sclk_pad,
+  vss_pad_1
 ]
 
 PAD_NORTH: [
-    "outputs\\[7\\].output_pad",
-    "outputs\\[6\\].output_pad",
-    "outputs\\[5\\].output_pad",
-    "outputs\\[4\\].output_pad",
-    "outputs\\[3\\].output_pad",
-    "outputs\\[2\\].output_pad",
-    "outputs\\[1\\].output_pad",
-    "outputs\\[0\\].output_pad",
-    
-    "iovdd_pads\\[0\\].iovdd_pad",
-    "iovss_pads\\[0\\].iovss_pad"
-]
-
-PAD_WEST: [
-    "inputs\\[9\\].input_pad",
-    "inputs\\[8\\].input_pad",
-    "inputs\\[7\\].input_pad",
-    "inputs\\[6\\].input_pad",
-    "inputs\\[5\\].input_pad",
-    "inputs\\[4\\].input_pad",
-    "inputs\\[3\\].input_pad",
-    "inputs\\[2\\].input_pad",
-    "inputs\\[1\\].input_pad",
-    "inputs\\[0\\].input_pad"
+  vdd_pad_1,
+  status_unlock_pad,
+  status_fault_pad,
+  status_busy_pad,
+  iovss_pad_0,
+  iovdd_pad_0
 ]
 
 # SDC files
@@ -125,12 +106,15 @@ FALLBACK_SDC: dir::chip_top.sdc
 # Power / ground nets
 VDD_NETS:
 - VDD
+- IOVDD
+
 GND_NETS:
 - VSS
+- IOVSS
 
 # Clock
 CLOCK_PORT: clk_PAD
-CLOCK_NET: clk_pad/p2c
+CLOCK_NET: sys_clk_pad/p2c
 
 CLOCK_PERIOD: 20
 
@@ -156,10 +140,12 @@ PAD_BONDPAD_NAME: bondpad_70x70_novias
 EXTRA_GDS:
 - dir::../ip/bondpad_70x70/gds/bondpad_70x70.gds
 - dir::../ip/bondpad_70x70_novias/gds/bondpad_70x70_novias.gds
+- dir::../IHP-Open-PDK/ihp-sg13g2/libs.ref/sg13g2_io/gds/sg13g2_io.gds
 
 EXTRA_LEFS:
 - dir::../ip/bondpad_70x70/lef/bondpad_70x70.lef
 - dir::../ip/bondpad_70x70_novias/lef/bondpad_70x70_novias.lef
+- dir::../IHP-Open-PDK/ihp-sg13g2/libs.ref/sg13g2_io/lef/sg13g2_io_notracks.lef
 
 IGNORE_DISCONNECTED_MODULES:
 - bondpad_70x70
