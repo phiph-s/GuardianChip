@@ -122,16 +122,17 @@ CLOCK_PERIOD: 20
 FP_SIZING: absolute
 # 3880umx5070um including 26um
 # for the sealring on all sides
-DIE_AREA:  [0, 0, 2800, 2800]
-CORE_AREA: [450, 450, 2350, 2350]
+DIE_AREA:  [0, 0, 3200, 3200]
+CORE_AREA: [500, 500, 2700, 2700]
 
 # Increase for more logic
 # on your die
-PL_TARGET_DENSITY_PCT: 55
+PL_TARGET_DENSITY_PCT: 40
 GRT_ALLOW_CONGESTION: true
 
 # PDN
-PDN_CORE_RING: True
+# TODO: ENABLE AGAIN
+PDN_CORE_RING: False
 
 # Override bondpad name
 PAD_BONDPAD_NAME: bondpad_70x70_novias
@@ -145,7 +146,6 @@ EXTRA_GDS:
 EXTRA_LEFS:
 - dir::../ip/bondpad_70x70/lef/bondpad_70x70.lef
 - dir::../ip/bondpad_70x70_novias/lef/bondpad_70x70_novias.lef
-- dir::../IHP-Open-PDK/ihp-sg13g2/libs.ref/sg13g2_io/lef/sg13g2_io_notracks.lef
 
 IGNORE_DISCONNECTED_MODULES:
 - bondpad_70x70
