@@ -3,13 +3,13 @@ Project: panel.hfp
 Print at 100% infill with a layer height of 0.2mm with a base layer of 0.2mm
 
 
- The Model is 43.8x79mm in size
+ The Model is 42.86x78.75mm in size
 
 The model is 1.00mm thick.
 The region from 0.80 to 1.00mm could have a Height Range Modifier to minimize print time.
 
-	#ffffff PLA Kingroon White  Transmission Distance: 6.5
-	#000000 PLA BambuLab Basic Black  Transmission Distance: 0.6
+	#080a0d PLA PolyLite Black  Transmission Distance: 0.3
+	#e2dedb PLA PolyLite White  Transmission Distance: 5
 This print uses 2 unique filaments
 
 Swap Instructions:

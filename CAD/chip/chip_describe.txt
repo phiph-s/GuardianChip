@@ -9,7 +9,7 @@ The model is 1.40mm thick.
 The region from 1.20 to 1.40mm could have a Height Range Modifier to minimize print time.
 
 	#000000 PLA BambuLab Basic Black  Transmission Distance: 0.6
-	#ffffff PLA Kingroon White  Transmission Distance: 6.5
+	#ffffff PLA Kingroon White  Transmission Distance: 4.6
 This print uses 2 unique filaments
 
 Swap Instructions:
