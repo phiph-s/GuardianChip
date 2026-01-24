@@ -9,10 +9,23 @@ IOBUF  PORT "clk_25mhz" IO_TYPE=LVCMOS33;
 FREQUENCY PORT "clk_25mhz" 25 MHZ;
 
 # =========================================================================
-# Reset Button (FIRE1)
+# Buttons (using FIRE1 and FIRE2)
 # =========================================================================
-LOCATE COMP "btn_fire1" SITE "R1";
-IOBUF  PORT "btn_fire1" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+LOCATE COMP "btn[0]" SITE "R1";   # FIRE1
+LOCATE COMP "btn[1]" SITE "T1";   # FIRE2  
+LOCATE COMP "btn[2]" SITE "U1";   # UP
+LOCATE COMP "btn[3]" SITE "H16";  # DOWN
+LOCATE COMP "btn[4]" SITE "K16";  # LEFT
+LOCATE COMP "btn[5]" SITE "D16";  # RIGHT
+LOCATE COMP "btn[6]" SITE "E15";  # CENTER/PWR
+
+IOBUF PORT "btn[0]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[1]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[2]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[3]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[4]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[5]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
+IOBUF PORT "btn[6]" PULLMODE=DOWN IO_TYPE=LVCMOS33;
 
 # =========================================================================
 # SPI Interface (MFRC522 and AT25010)
