@@ -127,12 +127,12 @@ CORE_AREA: [500, 500, 2700, 2700]
 
 # Increase for more logic
 # on your die
-PL_TARGET_DENSITY_PCT: 40
+PL_TARGET_DENSITY_PCT: 45
 GRT_ALLOW_CONGESTION: true
 
 # PDN
 # TODO: ENABLE AGAIN
-PDN_CORE_RING: False
+PDN_CORE_RING: True
 
 # Override bondpad name
 PAD_BONDPAD_NAME: bondpad_70x70_novias
