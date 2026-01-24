@@ -1,7 +1,6 @@
 module nfc_detector_wrapper (
     input wire clk,
     input wire rst_n,
-    input wire nfc_irq,
     
     output wire card_detected,
     output wire [31:0] card_uid,
@@ -25,10 +24,11 @@ module nfc_detector_wrapper (
     wire [7:0] nfc_cmd_rdata;
     wire nfc_cmd_done;
 
-    nfc_card_detector u_detector (
+    nfc_card_detector #(
+        .POLL_INTERVAL(10000)  // Fast polling for simulation (10k cycles @ 100MHz = 100us)
+    ) u_detector (
         .clk(clk),
         .rst_n(rst_n),
-        .nfc_irq(nfc_irq),
         .card_detected(card_detected),
         .card_uid(card_uid),
         .card_ready(card_ready),

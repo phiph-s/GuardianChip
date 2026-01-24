@@ -137,23 +137,21 @@ async def test_nfc_detector_sequence(dut):
     
     # Reset
     dut.rst_n.value = 0
-    dut.nfc_irq.value = 0
     await Timer(100, unit="ns")
     dut.rst_n.value = 1
     await Timer(100, unit="ns")
     
-    cocotb.log.info("--- Step 1: Trigger Card Detection ---")
+    cocotb.log.info("--- Step 1: Wait for Polling Trigger ---")
     nfc.card_present = True
-    dut.nfc_irq.value = 1
-    await Timer(100, unit="ns")
-    dut.nfc_irq.value = 0
+    # No IRQ needed - module will poll automatically
     
     # Wait for detection to complete
     # The sequence is REQA -> ANTICOLL -> SELECT
     # This takes some time due to SPI transactions
     
     try:
-        await with_timeout(RisingEdge(dut.card_ready), 500000, "ns")
+        # Longer timeout for polling-based detection (needs to wait for poll trigger)
+        await with_timeout(RisingEdge(dut.card_ready), 2000000, "ns")
         await ReadOnly() # Wait for values to settle
         cocotb.log.info("✓ Card Ready signal asserted")
     except Exception as e:

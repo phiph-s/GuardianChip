@@ -2,12 +2,11 @@
 // Implements ISO14443A card detection and selection
 // Detects card presence and reads UID before triggering authentication
 
-module nfc_card_detector (
+module nfc_card_detector #(
+  parameter POLL_INTERVAL = 25_000_000  // Poll every 1 sec @ 25MHz (use smaller value for sim)
+)(
   input  logic         clk,
   input  logic         rst_n,
-  
-  // MFRC522 interrupt input
-  input  logic         nfc_irq,           // Interrupt from MFRC522 (card detected)
   
   // Card detection outputs
   output logic         card_detected,     // Card is present
@@ -95,7 +94,10 @@ module nfc_card_detector (
   logic [7:0]  sak_response;
   logic [3:0]  retry_count;
   logic        command_sent;
-  logic        irq_detected;
+  
+  // Polling timer
+  logic [24:0] poll_counter;
+  logic        poll_trigger;
   
   // Transaction buffers
   logic [7:0]  tx_buffer [0:15];
@@ -124,14 +126,14 @@ module nfc_card_detector (
     
     case (state)
       ST_IDLE: begin
-        if (irq_detected) begin
+        if (poll_trigger) begin
             next_state = ST_CLEAR_IRQ;
             next_protocol_state = PROT_REQA;
         end
       end
       
       ST_WAIT_IRQ: begin
-        if (irq_detected) begin
+        if (poll_trigger) begin
             next_state = ST_CLEAR_IRQ;
             next_protocol_state = PROT_REQA;
         end
@@ -239,22 +241,21 @@ module nfc_card_detector (
     endcase
   end
   
-  // IRQ edge detection
-  logic irq_prev;
+  // Polling timer - triggers card detection periodically
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      irq_prev <= 1'b0;
-      irq_detected <= 1'b0;
+      poll_counter <= 25'h0;
+      poll_trigger <= 1'b0;
     end else begin
-      irq_prev <= nfc_irq;
-      if (nfc_irq && !irq_prev) begin
-        irq_detected <= 1'b1;
+      if (poll_counter == POLL_INTERVAL - 1) begin
+        poll_counter <= 25'h0;
+        poll_trigger <= 1'b1;
         `ifdef SIM
-        $display("[%0t] [NFC_DETECTOR] Card detected (IRQ triggered)", $time);
+        $display("[%0t] [NFC_DETECTOR] Poll trigger (checking for card)", $time);
         `endif
-      end
-      if (state == ST_TX_FIFO && irq_detected) begin
-        irq_detected <= 1'b0;
+      end else begin
+        poll_counter <= poll_counter + 1;
+        poll_trigger <= 1'b0;
       end
     end
   end
