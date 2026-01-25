@@ -185,6 +185,8 @@ module nfc_card_detector #(
     reg [7:0] atqa0   = 8'h00;
     reg [7:0] atqa1   = 8'h00;
 
+    reg [11:0] unlock_ms = 12'd0;
+
     reg [15:0] poll_ctr = 16'd0;
 
     // micro-ops: write reg(value), read reg -> tmp_reg
@@ -511,6 +513,7 @@ module nfc_card_detector #(
                         unlock    <= 1'b1;
                         busy      <= 1'b0;
                         state     <= 8'h6D;
+                        unlock_ms <= 12'd3000;
                     end else begin
                         state <= 8'h30;
                     end
@@ -518,9 +521,19 @@ module nfc_card_detector #(
 
                 // hold unlocked (you can change this to pulse if you want)
                 8'h6D: begin
-                    busy <= 1'b0;
-                    // keep running or stop; for now stop here.
-                    state <= 8'h6D;
+                  busy <= 1'b0;
+
+                  // countdown in ms using the ms_tick we already added
+                  if (ms_tick) begin
+                    if (unlock_ms != 0)
+                      unlock_ms <= unlock_ms - 1'b1;
+                    else begin
+                      unlock <= 1'b0;
+                      busy <= 1'b1;
+                      card_seen <= 1'b0;
+                      state <= 8'h30;     // zurück in den Arduino-Loop-Pfad
+                    end
+                  end
                 end
 
                 // Hard fault stop
