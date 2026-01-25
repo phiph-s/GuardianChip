@@ -1,48 +1,37 @@
-# ULX3S FPGA Build for MFRC522 Testing
-# Toolchain: Yosys, nextpnr-ecp5, ecppack, fujprog
+TOP = ulx3s_test_top
+OUT = ulx3s_rc522_min
 
-TOP_MODULE = ulx3s_test_top
-SOURCE = mfrc_debug.v
-LPF = ulx3s.lpf
-
-# ECP5-85K device
-DEVICE = 85k
+DEVICE  = 85k
 PACKAGE = CABGA381
-FREQ = 25
+FREQ    = 25
+LPF     = ulx3s.lpf
 
-all: mfrc522.bit
+RTL = \
+  ulx3s_test_top.v \
+  ../src/user_rtl/rtl/nfc_card_detector.v
 
-mfrc522.bit: mfrc522.config
+SPIIP = \
+  ../src/user_rtl/ip/verilog_spi/spi_module.v \
+  ../src/user_rtl/ip/verilog_spi/clock_divider.v \
+  ../src/user_rtl/ip/verilog_spi/pos_edge_det.v \
+  ../src/user_rtl/ip/verilog_spi/neg_edge_det.v
+
+all: $(OUT).bit
+
+$(OUT).json: $(RTL) $(SPIIP)
+	yosys -p "read_verilog -sv $(RTL) $(SPIIP); synth_ecp5 -top $(TOP) -json $@"
+
+$(OUT).config: $(OUT).json $(LPF)
+	nextpnr-ecp5 --$(DEVICE) --package $(PACKAGE) \
+		--json $(OUT).json --lpf $(LPF) --textcfg $@ --freq $(FREQ)
+
+$(OUT).bit: $(OUT).config
 	ecppack --compress $< $@
 
-mfrc522.config: mfrc522.json $(LPF)
-	nextpnr-ecp5 --$(DEVICE) --package $(PACKAGE) --json $< --textcfg $@ --lpf $(LPF) --freq $(FREQ)
-
-mfrc522.json: $(SOURCE)
-	yosys -p "read_verilog $<; synth_ecp5 -top $(TOP_MODULE) -json $@"
-
-prog: mfrc522.bit
+prog: $(OUT).bit
 	sudo fujprog $<
-
-flash: mfrc522.bit
-	sudo fujprog -j flash $<
 
 clean:
 	rm -f *.json *.config *.bit
 
-info:
-	@echo "MFRC522 Hardware Test for ULX3S"
-	@echo "================================"
-	@echo "Source:  $(SOURCE)"
-	@echo "Device:  ECP5-$(DEVICE) $(PACKAGE)"
-	@echo "Clock:   $(FREQ) MHz"
-	@echo ""
-	@echo "Targets:"
-	@echo "  make        - Build bitstream"
-	@echo "  make prog   - Program SRAM (temporary)"
-	@echo "  make flash  - Program Flash (persistent)"
-	@echo "  make clean  - Remove build files"
-
-.PHONY: all prog flash clean info
-
-.PHONY: all prog flash clean info
+.PHONY: all clean prog
