@@ -8,7 +8,8 @@ LPF     = ulx3s.lpf
 
 RTL = \
   ulx3s_test_top.v \
-  ../src/user_rtl/rtl/nfc_card_detector.v
+  ../src/user_rtl/rtl/nfc_card_detector.v \
+  ../src/user_rtl/rtl/spi_master.v
 
 SPIIP = \
   ../src/user_rtl/ip/verilog_spi/spi_module.v \

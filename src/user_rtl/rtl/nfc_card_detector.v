@@ -4,44 +4,24 @@ module nfc_card_detector #(
 )(
     input  wire clk,
     input  wire rst,              // sync reset, active high
+output reg  spi_cs_0,         // MFRC522 CS (active low)
 
-    output wire spi_sclk,
-    output reg  spi_cs_0,         // MFRC522 CS (active low)
-    output reg  spi_mosi,
-    input  wire spi_miso,
-
-    output reg  busy,
+    // SPI byte-transfer interface (drives external spi_master, Mode 0)
+    output reg        start_xfer,
+    output reg  [7:0] tx_byte,
+    input  wire       xfer_active,
+    input  wire       xfer_done,
+    input  wire [7:0] rx_byte,
+output reg  busy,
     output reg  hard_fault,
     output reg  card_seen,
     output reg  unlock,
     output wire [7:0] dbg_state,
-    output reg [7:0] dbg_prev_state
-);
+    output reg [7:0] dbg_prev_state);
 
     // ------------------------------------------------------------------------
     // SPI bit engine: Mode0 (CPOL=0, CPHA=0), MSB first, 8-bit words
     // ------------------------------------------------------------------------
-    localparam integer HALF_DIV = CLK_HZ / (SPI_HZ * 2); // 32MHz/(4MHz*2)=4
-    localparam integer HALF_DIV_W = 16;
-
-    reg [HALF_DIV_W-1:0] div_cnt = 0;
-    reg sclk = 1'b0;
-    assign spi_sclk = sclk;
-
-    reg [7:0] shifter_tx = 8'h00;
-    reg [7:0] shifter_rx = 8'h00;
-    reg [2:0] bit_idx    = 3'd7;
-
-    reg       xfer_active = 1'b0;
-    reg       xfer_done   = 1'b0;
-
-    reg done_pending = 1'b0;
-
-    // handshake for one-byte transfer
-    reg       start_xfer  = 1'b0;
-    reg [7:0] tx_byte     = 8'h00;
-    reg [7:0] rx_byte     = 8'h00;
-
     // 1ms tick generator
     localparam integer MS_DIV = CLK_HZ / 1000; // 32000 @ 32MHz
     reg [$clog2(MS_DIV)-1:0] ms_cnt = 0;
@@ -65,72 +45,8 @@ module nfc_card_detector #(
     reg [7:0] delay_ms = 8'd0;
     reg [1:0] reset_tries = 2'd0;
 
-    // Start on SCK low, present MOSI before rising edge, sample MISO on rising edge.
-    always @(posedge clk) begin
-        if (rst) begin
-            div_cnt     <= 0;
-            sclk        <= 1'b0;
-            spi_mosi    <= 1'b0;
-            shifter_tx  <= 8'h00;
-            shifter_rx  <= 8'h00;
-            bit_idx     <= 3'd7;
-            xfer_active <= 1'b0;
-            xfer_done   <= 1'b0;
-            rx_byte     <= 8'h00;
-        end else begin
-            xfer_done <= 1'b0;
 
-            if (start_xfer && !xfer_active) begin
-                // latch new byte
-                xfer_active <= 1'b1;
-                shifter_tx  <= tx_byte;
-                shifter_rx  <= 8'h00;
-                bit_idx     <= 3'd7;
-                sclk        <= 1'b0;
-                div_cnt     <= 0;
-                spi_mosi    <= tx_byte[7];  // present MSB before first rising edge
-                done_pending <= 1'b0;
-            end
-
-            if (xfer_active) begin
-              if (div_cnt == HALF_DIV-1) begin
-                div_cnt <= 0;
-                sclk <= ~sclk;
-
-                if (sclk == 1'b0) begin
-                  // rising edge (0->1): sample MISO
-                  shifter_rx[bit_idx] <= spi_miso;
-
-                  if (bit_idx == 0) begin
-                    // last bit sampled - DO NOT force sclk low here!
-                    // we wait one more half-cycle so SCK can fall back to 0 cleanly
-                    done_pending <= 1'b1;
-                  end else begin
-                    bit_idx <= bit_idx - 1'b1;
-                  end
-
-                end else begin
-                  // falling edge (1->0): update MOSI
-                  spi_mosi <= shifter_tx[bit_idx];
-
-                  // if we already sampled last bit on previous rising edge,
-                  // complete transfer NOW (after this falling edge)
-                  if (done_pending) begin
-                    done_pending <= 1'b0;
-                    xfer_active  <= 1'b0;
-                    xfer_done    <= 1'b1;
-                    rx_byte      <= {shifter_rx[7:1], shifter_rx[0]}; 
-                    // (alternativ: rx_byte <= shifter_rx; wenn du shifter_rx[0] sauber gesetzt hast)
-                    // sclk is already falling to 0 via the toggle -> idle low achieved naturally
-                  end
-                end
-              end else begin
-                div_cnt <= div_cnt + 1'b1;
-              end
-            end
-        end
-    end
-
+    
     // ------------------------------------------------------------------------
     // High-level MFRC522 sequence (Arduino-identical path up to ATQA)
     // ------------------------------------------------------------------------
