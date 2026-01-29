@@ -807,10 +807,18 @@ output reg  busy,
                     // For simplicity, we only support single-size (4-byte) UIDs
                     // If SAK[2]==1, would need CL2, but we ignore this case
                     card_uid <= {uid0, uid1, uid2, uid3};
-                    unlock    <= 1'b1;
-                    busy      <= 1'b0;
-                    unlock_ms <= 12'd3000;
-                    state     <= 8'hEF;
+                    if ({uid0, uid1, uid2, uid3} == 32'hEBD90C06) begin
+                        unlock    <= 1'b1;
+                        busy      <= 1'b0;
+                        unlock_ms <= 12'd3000;
+                        state     <= 8'hEF;
+                    end else begin
+                        unlock    <= 1'b0;
+                        busy      <= 1'b0;
+                        hard_fault <= 1'b1;
+                        unlock_ms <= 12'd3000;
+                        state     <= 8'hF0;
+                    end
                 end
 
                 // hold unlocked (you can change this to pulse if you want)
@@ -828,6 +836,21 @@ output reg  busy,
                       state <= 8'h30;     // zurück in den Arduino-Loop-Pfad
                     end
                   end
+                                end
+
+                                // FAULT state: 3s Fault, dann zurück in Loop
+                                8'hF0: begin
+                                    busy <= 1'b0;
+                                    if (ms_tick) begin
+                                        if (unlock_ms != 0)
+                                            unlock_ms <= unlock_ms - 1'b1;
+                                        else begin
+                                            hard_fault <= 1'b0;
+                                            busy <= 1'b1;
+                                            card_seen <= 1'b0;
+                                            state <= 8'h30;
+                                        end
+                                    end
                 end
 
                 // Hard fault stop
