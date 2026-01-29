@@ -141,6 +141,44 @@ output reg  busy,
 
     reg [15:0] poll_ctr = 16'd0;
 
+    // LAYR APDU protocol helpers
+    reg [4:0] apdu_state = 5'd0;
+    reg [3:0] apdu_idx = 4'd0;
+    reg [4:0] resp_idx = 5'd0;
+    reg [7:0] sel_sw1 = 8'h00;
+    reg [7:0] sel_sw2 = 8'h00;
+    reg [7:0] auth_sw1 = 8'h00;
+    reg [7:0] auth_sw2 = 8'h00;
+    reg       pattern_ok = 1'b1;
+    reg [127:0] auth_pattern = 128'h0;
+
+    localparam [4:0] APDU_CFG_TXMODE      = 5'd0;
+    localparam [4:0] APDU_CFG_RXMODE      = 5'd1;
+    localparam [4:0] APDU_SEL_IDLE        = 5'd2;
+    localparam [4:0] APDU_SEL_IRQ_CLEAR   = 5'd3;
+    localparam [4:0] APDU_SEL_FIFO_FLUSH  = 5'd4;
+    localparam [4:0] APDU_SEL_FIFO_WRITE  = 5'd5;
+    localparam [4:0] APDU_SEL_BITFRAMING  = 5'd6;
+    localparam [4:0] APDU_SEL_CMD         = 5'd7;
+    localparam [4:0] APDU_SEL_STARTSEND   = 5'd8;
+    localparam [4:0] APDU_SEL_POLL        = 5'd9;
+    localparam [4:0] APDU_SEL_ERR         = 5'd10;
+    localparam [4:0] APDU_SEL_LEN         = 5'd11;
+    localparam [4:0] APDU_SEL_READ        = 5'd12;
+    localparam [4:0] APDU_SEL_STATUS      = 5'd13;
+    localparam [4:0] APDU_AUTH_IDLE       = 5'd14;
+    localparam [4:0] APDU_AUTH_IRQ_CLEAR  = 5'd15;
+    localparam [4:0] APDU_AUTH_FIFO_FLUSH = 5'd16;
+    localparam [4:0] APDU_AUTH_FIFO_WRITE = 5'd17;
+    localparam [4:0] APDU_AUTH_BITFRAMING = 5'd18;
+    localparam [4:0] APDU_AUTH_CMD        = 5'd19;
+    localparam [4:0] APDU_AUTH_STARTSEND  = 5'd20;
+    localparam [4:0] APDU_AUTH_POLL       = 5'd21;
+    localparam [4:0] APDU_AUTH_ERR        = 5'd22;
+    localparam [4:0] APDU_AUTH_LEN        = 5'd23;
+    localparam [4:0] APDU_AUTH_READ       = 5'd24;
+    localparam [4:0] APDU_AUTH_STATUS     = 5'd25;
+
     // micro-ops: write reg(value), read reg -> tmp_reg
     // Each micro-op is a two-byte SPI sequence with CS toggling exactly like Arduino lib.
     reg [7:0] op_addr  = 8'h00;
@@ -171,6 +209,39 @@ output reg  busy,
         end
     endtask
 
+    function [7:0] select_apdu_byte;
+        input [3:0] idx;
+        begin
+            case (idx)
+                4'd0:  select_apdu_byte = 8'h00;
+                4'd1:  select_apdu_byte = 8'hA4;
+                4'd2:  select_apdu_byte = 8'h04;
+                4'd3:  select_apdu_byte = 8'h00;
+                4'd4:  select_apdu_byte = 8'h06;
+                4'd5:  select_apdu_byte = 8'hF0;
+                4'd6:  select_apdu_byte = 8'hBA;
+                4'd7:  select_apdu_byte = 8'hAA;
+                4'd8:  select_apdu_byte = 8'hAA;
+                4'd9:  select_apdu_byte = 8'hAD;
+                4'd10: select_apdu_byte = 8'h01;
+                default: select_apdu_byte = 8'h00;
+            endcase
+        end
+    endfunction
+
+    function [7:0] auth_init_byte;
+        input [2:0] idx;
+        begin
+            case (idx)
+                3'd0: auth_init_byte = 8'h80;
+                3'd1: auth_init_byte = 8'h10;
+                3'd2: auth_init_byte = 8'h00;
+                3'd3: auth_init_byte = 8'h00;
+                default: auth_init_byte = 8'h00;
+            endcase
+        end
+    endfunction
+
     // op engine
     always @(posedge clk) begin
         if (rst) begin
@@ -200,6 +271,15 @@ output reg  busy,
             sak <= 8'h00;
             dbg_uid_bcc <= 8'h00;
             dbg_calc_bcc <= 8'h00;
+            apdu_state <= APDU_CFG_TXMODE;
+            apdu_idx <= 4'd0;
+            resp_idx <= 5'd0;
+            sel_sw1 <= 8'h00;
+            sel_sw2 <= 8'h00;
+            auth_sw1 <= 8'h00;
+            auth_sw2 <= 8'h00;
+            pattern_ok <= 1'b1;
+            auth_pattern <= 128'h0;
         end else begin
             op_done <= 1'b0;
             start_xfer <= 1'b0;
@@ -803,22 +883,344 @@ output reg  busy,
 
                 // SUCCESS! Card UID read complete
                 8'hEE: begin
-                    // Check if cascade bit is set (bit 2) - UID not complete
-                    // For simplicity, we only support single-size (4-byte) UIDs
-                    // If SAK[2]==1, would need CL2, but we ignore this case
+                    // Card UID read complete; proceed with LAYR APDU protocol
                     card_uid <= {uid0, uid1, uid2, uid3};
-                    if ({uid0, uid1, uid2, uid3} == 32'hEBD90C06) begin
-                        unlock    <= 1'b1;
-                        busy      <= 1'b0;
-                        unlock_ms <= 12'd3000;
-                        state     <= 8'hEF;
-                    end else begin
-                        unlock    <= 1'b0;
-                        busy      <= 1'b0;
-                        hard_fault <= 1'b1;
-                        unlock_ms <= 12'd3000;
-                        state     <= 8'hF0;
-                    end
+                    unlock <= 1'b0;
+                    busy <= 1'b1;
+                    hard_fault <= 1'b0;
+                    apdu_state <= APDU_CFG_TXMODE;
+                    apdu_idx <= 4'd0;
+                    resp_idx <= 5'd0;
+                    pattern_ok <= 1'b1;
+                    auth_pattern <= 128'h0;
+                    poll_ctr <= 16'd0;
+                    state <= 8'hF1;
+                end
+
+                // ======== LAYR APDU protocol (SELECT + AUTH_INIT) ========
+                8'hF1: begin
+                    busy <= 1'b1;
+                    case (apdu_state)
+                        APDU_CFG_TXMODE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_TxMode_W, 8'h80); // enable CRC
+                            end
+                            if (op_done) apdu_state <= APDU_CFG_RXMODE;
+                        end
+
+                        APDU_CFG_RXMODE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_RxMode_W, 8'h80); // enable CRC
+                            end
+                            if (op_done) apdu_state <= APDU_SEL_IDLE;
+                        end
+
+                        // ---- SELECT APDU ----
+                        APDU_SEL_IDLE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_Command_W, PCD_Idle);
+                            end
+                            if (op_done) apdu_state <= APDU_SEL_IRQ_CLEAR;
+                        end
+
+                        APDU_SEL_IRQ_CLEAR: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_ComIrq_W, 8'h7F);
+                            end
+                            if (op_done) apdu_state <= APDU_SEL_FIFO_FLUSH;
+                        end
+
+                        APDU_SEL_FIFO_FLUSH: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_FIFOLevel_W, 8'h80);
+                            end
+                            if (op_done) begin
+                                apdu_idx <= 4'd0;
+                                apdu_state <= APDU_SEL_FIFO_WRITE;
+                            end
+                        end
+
+                        APDU_SEL_FIFO_WRITE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_FIFOData_W, select_apdu_byte(apdu_idx));
+                            end
+                            if (op_done) begin
+                                if (apdu_idx == 4'd10) begin
+                                    apdu_state <= APDU_SEL_BITFRAMING;
+                                end else begin
+                                    apdu_idx <= apdu_idx + 1'b1;
+                                end
+                            end
+                        end
+
+                        APDU_SEL_BITFRAMING: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_BitFraming_W, 8'h00);
+                            end
+                            if (op_done) apdu_state <= APDU_SEL_CMD;
+                        end
+
+                        APDU_SEL_CMD: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_Command_W, PCD_Transceive);
+                            end
+                            if (op_done) apdu_state <= APDU_SEL_STARTSEND;
+                        end
+
+                        APDU_SEL_STARTSEND: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_BitFraming_W, 8'h80);
+                            end
+                            if (op_done) begin
+                                poll_ctr <= 16'd0;
+                                apdu_state <= APDU_SEL_POLL;
+                            end
+                        end
+
+                        APDU_SEL_POLL: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_ComIrq_R);
+                            end
+                            if (op_done) begin
+                                comirq <= tmp_reg;
+                                if ((tmp_reg & 8'h30) != 8'h00) begin
+                                    apdu_state <= APDU_SEL_ERR;
+                                end else if ((tmp_reg & 8'h01) != 8'h00) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    poll_ctr <= poll_ctr + 1'b1;
+                                    if (poll_ctr == 16'hFFFF) begin
+                                        hard_fault <= 1'b1;
+                                        state <= 8'hFF;
+                                    end else begin
+                                        apdu_state <= APDU_SEL_POLL;
+                                    end
+                                end
+                            end
+                        end
+
+                        APDU_SEL_ERR: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_Error_R);
+                            end
+                            if (op_done) begin
+                                errreg <= tmp_reg;
+                                if ((tmp_reg & 8'h13) != 8'h00) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    apdu_state <= APDU_SEL_LEN;
+                                end
+                            end
+                        end
+
+                        APDU_SEL_LEN: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_FIFOLevel_R);
+                            end
+                            if (op_done) begin
+                                fifolvl <= tmp_reg;
+                                if (tmp_reg < 8'd2) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    resp_idx <= 5'd0;
+                                    apdu_state <= APDU_SEL_READ;
+                                end
+                            end
+                        end
+
+                        APDU_SEL_READ: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_FIFOData_R);
+                            end
+                            if (op_done) begin
+                                if (resp_idx == 5'd0)
+                                    sel_sw1 <= tmp_reg;
+                                else
+                                    sel_sw2 <= tmp_reg;
+                                if (resp_idx == 5'd1)
+                                    apdu_state <= APDU_SEL_STATUS;
+                                else
+                                    resp_idx <= resp_idx + 1'b1;
+                            end
+                        end
+
+                        APDU_SEL_STATUS: begin
+                            if (sel_sw1 == 8'h90 && sel_sw2 == 8'h00) begin
+                                apdu_state <= APDU_AUTH_IDLE;
+                            end else begin
+                                hard_fault <= 1'b1;
+                                unlock_ms <= 12'd3000;
+                                state <= 8'hF0;
+                            end
+                        end
+
+                        // ---- AUTH_INIT APDU ----
+                        APDU_AUTH_IDLE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_Command_W, PCD_Idle);
+                            end
+                            if (op_done) apdu_state <= APDU_AUTH_IRQ_CLEAR;
+                        end
+
+                        APDU_AUTH_IRQ_CLEAR: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_ComIrq_W, 8'h7F);
+                            end
+                            if (op_done) apdu_state <= APDU_AUTH_FIFO_FLUSH;
+                        end
+
+                        APDU_AUTH_FIFO_FLUSH: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_FIFOLevel_W, 8'h80);
+                            end
+                            if (op_done) begin
+                                apdu_idx <= 4'd0;
+                                apdu_state <= APDU_AUTH_FIFO_WRITE;
+                            end
+                        end
+
+                        APDU_AUTH_FIFO_WRITE: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_FIFOData_W, auth_init_byte(apdu_idx[2:0]));
+                            end
+                            if (op_done) begin
+                                if (apdu_idx == 4'd3) begin
+                                    apdu_state <= APDU_AUTH_BITFRAMING;
+                                end else begin
+                                    apdu_idx <= apdu_idx + 1'b1;
+                                end
+                            end
+                        end
+
+                        APDU_AUTH_BITFRAMING: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_BitFraming_W, 8'h00);
+                            end
+                            if (op_done) apdu_state <= APDU_AUTH_CMD;
+                        end
+
+                        APDU_AUTH_CMD: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_Command_W, PCD_Transceive);
+                            end
+                            if (op_done) apdu_state <= APDU_AUTH_STARTSEND;
+                        end
+
+                        APDU_AUTH_STARTSEND: begin
+                            if (op_step == 3'd0) begin
+                                start_write(REG_BitFraming_W, 8'h80);
+                            end
+                            if (op_done) begin
+                                poll_ctr <= 16'd0;
+                                apdu_state <= APDU_AUTH_POLL;
+                            end
+                        end
+
+                        APDU_AUTH_POLL: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_ComIrq_R);
+                            end
+                            if (op_done) begin
+                                comirq <= tmp_reg;
+                                if ((tmp_reg & 8'h30) != 8'h00) begin
+                                    apdu_state <= APDU_AUTH_ERR;
+                                end else if ((tmp_reg & 8'h01) != 8'h00) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    poll_ctr <= poll_ctr + 1'b1;
+                                    if (poll_ctr == 16'hFFFF) begin
+                                        hard_fault <= 1'b1;
+                                        state <= 8'hFF;
+                                    end else begin
+                                        apdu_state <= APDU_AUTH_POLL;
+                                    end
+                                end
+                            end
+                        end
+
+                        APDU_AUTH_ERR: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_Error_R);
+                            end
+                            if (op_done) begin
+                                errreg <= tmp_reg;
+                                if ((tmp_reg & 8'h13) != 8'h00) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    apdu_state <= APDU_AUTH_LEN;
+                                end
+                            end
+                        end
+
+                        APDU_AUTH_LEN: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_FIFOLevel_R);
+                            end
+                            if (op_done) begin
+                                fifolvl <= tmp_reg;
+                                if (tmp_reg < 8'd18) begin
+                                    hard_fault <= 1'b1;
+                                    unlock_ms <= 12'd3000;
+                                    state <= 8'hF0;
+                                end else begin
+                                    resp_idx <= 5'd0;
+                                    auth_pattern <= 128'h0;
+                                    pattern_ok <= 1'b1;
+                                    apdu_state <= APDU_AUTH_READ;
+                                end
+                            end
+                        end
+
+                        APDU_AUTH_READ: begin
+                            if (op_step == 3'd0) begin
+                                start_read(REG_FIFOData_R);
+                            end
+                            if (op_done) begin
+                                if (resp_idx < 5'd16) begin
+                                    auth_pattern <= {auth_pattern[119:0], tmp_reg};
+                                    if (tmp_reg != 8'hAA)
+                                        pattern_ok <= 1'b0;
+                                end else if (resp_idx == 5'd16) begin
+                                    auth_sw1 <= tmp_reg;
+                                end else begin
+                                    auth_sw2 <= tmp_reg;
+                                end
+
+                                if (resp_idx == 5'd17) begin
+                                    apdu_state <= APDU_AUTH_STATUS;
+                                end else begin
+                                    resp_idx <= resp_idx + 1'b1;
+                                end
+                            end
+                        end
+
+                        APDU_AUTH_STATUS: begin
+                            if (auth_sw1 == 8'h90 && auth_sw2 == 8'h00 && pattern_ok) begin
+                                unlock <= 1'b1;
+                                busy <= 1'b0;
+                                unlock_ms <= 12'd3000;
+                                state <= 8'hEF;
+                            end else begin
+                                unlock <= 1'b0;
+                                busy <= 1'b0;
+                                hard_fault <= 1'b1;
+                                unlock_ms <= 12'd3000;
+                                state <= 8'hF0;
+                            end
+                        end
+
+                        default: apdu_state <= APDU_CFG_TXMODE;
+                    endcase
                 end
 
                 // hold unlocked (you can change this to pulse if you want)
