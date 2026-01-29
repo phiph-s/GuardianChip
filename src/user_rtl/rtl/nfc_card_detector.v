@@ -17,7 +17,17 @@ output reg  busy,
     output reg  card_seen,
     output reg  unlock,
     output wire [7:0] dbg_state,
-    output reg [7:0] dbg_prev_state);
+    output reg [7:0] dbg_prev_state,
+    output reg [7:0] max_state,    // highest state reached (for debug)
+    output reg [31:0] card_uid,   // 4-byte UID output
+    output reg [7:0] dbg_uid_bcc,  // received BCC for debug
+    output reg [7:0] dbg_calc_bcc, // calculated BCC for debug
+    output wire [7:0] dbg_uid0,    // uid0 register for debug
+    output wire [7:0] dbg_uid1,    // uid1 register for debug
+    output wire [7:0] dbg_uid2,    // uid2 register for debug
+    output wire [7:0] dbg_uid3,    // uid3 register for debug
+    output wire [7:0] dbg_comirq   // comirq register for debug
+);
 
     // ------------------------------------------------------------------------
     // SPI bit engine: Mode0 (CPOL=0, CPHA=0), MSB first, 8-bit words
@@ -73,11 +83,14 @@ output reg  busy,
     localparam [7:0] REG_TxControl_W   = 8'h28;
     localparam [7:0] REG_TxControl_R   = 8'hA8;
     localparam [7:0] REG_TxASK_W       = 8'h2A;
+    localparam [7:0] REG_CRCResultL_R  = 8'hC4;  // CRCResultRegL read = 0x22<<1 | 0x80
+    localparam [7:0] REG_CRCResultH_R  = 8'hC2;  // CRCResultRegH read = 0x21<<1 | 0x80
     localparam [7:0] REG_ModWidth_W    = 8'h48;
     localparam [7:0] REG_TMode_W       = 8'h54;
     localparam [7:0] REG_TPrescaler_W  = 8'h56;
     localparam [7:0] REG_TReloadH_W    = 8'h58;
     localparam [7:0] REG_TReloadL_W    = 8'h5A;
+    localparam [7:0] REG_Version_R     = 8'hEE;  // VersionReg = 0x37<<1 | 0x80 = 0x6E | 0x80 = 0xEE
 
     // MFRC522 commands/constants used in your pasted cpp
     localparam [7:0] PCD_Idle      = 8'h00;
@@ -86,11 +99,17 @@ output reg  busy,
     localparam [7:0] PCD_SoftReset = 8'h0F;
 
     localparam [7:0] REQA          = 8'h26;
+    localparam [7:0] PICC_CMD_SEL_CL1 = 8'h93;  // Anti collision/Select, Cascade Level 1
 
     // State machine
     reg [7:0] state = 8'h00;
     reg [7:0] prev_state;
     assign dbg_state = state;
+    assign dbg_uid0 = uid0;
+    assign dbg_uid1 = uid1;
+    assign dbg_uid2 = uid2;
+    assign dbg_uid3 = uid3;
+    assign dbg_comirq = comirq;
 
     // helpers / temp regs
     reg [7:0] tmp_reg = 8'h00;
@@ -100,6 +119,23 @@ output reg  busy,
     reg [7:0] ctrlreg = 8'h00;
     reg [7:0] atqa0   = 8'h00;
     reg [7:0] atqa1   = 8'h00;
+
+    // UID storage (anticollision response: UID0-3 + BCC)
+    reg [7:0] uid0 = 8'h00;
+    reg [7:0] uid1 = 8'h00;
+    reg [7:0] uid2 = 8'h00;
+    reg [7:0] uid3 = 8'h00;
+    reg [7:0] uid_bcc = 8'h00;
+    
+    // CRC result storage
+    reg [7:0] crc_lo = 8'h00;
+    reg [7:0] crc_hi = 8'h00;
+    
+    // SAK storage
+    reg [7:0] sak = 8'h00;
+    
+    // Burst read counter
+    reg [3:0] burst_cnt = 4'd0;
 
     reg [11:0] unlock_ms = 12'd0;
 
@@ -140,20 +176,38 @@ output reg  busy,
         if (rst) begin
             prev_state      <= 8'h00;
             dbg_prev_state  <= 8'h00;
+            max_state       <= 8'h00;
             spi_cs_0 <= 1'b1;
             busy     <= 1'b1;
             hard_fault <= 1'b0;
             card_seen <= 1'b0;
             unlock    <= 1'b0;
+            card_uid  <= 32'h0;
 
             op_step <= 3'd0;
             op_done <= 1'b0;
             start_xfer <= 1'b0;
             state <= 8'h00;
             poll_ctr <= 16'd0;
+            burst_cnt <= 4'd0;
+            uid0 <= 8'h00;
+            uid1 <= 8'h00;
+            uid2 <= 8'h00;
+            uid3 <= 8'h00;
+            uid_bcc <= 8'h00;
+            crc_lo <= 8'h00;
+            crc_hi <= 8'h00;
+            sak <= 8'h00;
+            dbg_uid_bcc <= 8'h00;
+            dbg_calc_bcc <= 8'h00;
         end else begin
             op_done <= 1'b0;
             start_xfer <= 1'b0;
+
+            // Track maximum state reached (for debugging)
+            if (state > max_state) begin
+                max_state <= state;
+            end
 
             // nur updaten solange wir NICHT im HardFault sind
             if (state != 8'hFF) begin
@@ -162,7 +216,11 @@ output reg  busy,
             end
 
             // default: keep CS high unless op active or burst active
-            if (op_step == 3'd0) begin
+            // WICHTIG: Während des manuellen Burst-Reads (States 0x65-0x69, 0x8F-0x95)
+            // darf CS NICHT automatisch high gesetzt werden!
+            if (op_step == 3'd0 && 
+                !((state >= 8'h65 && state <= 8'h69) ||   // ATQA burst read
+                  (state >= 8'h8F && state <= 8'h95))) begin  // UID burst read
                 spi_cs_0 <= 1'b1;
             end
 
@@ -219,6 +277,11 @@ output reg  busy,
                   card_seen <= 1'b0;
                   unlock <= 1'b0;
                   reset_tries <= 0;
+                  // Initialize uid registers to 0 (will be overwritten by UID read)
+                  uid0 <= 8'h00;
+                  uid1 <= 8'h00;
+                  uid2 <= 8'h00;
+                  uid3 <= 8'h00;
                   if (op_step == 3'd0) begin
                     start_write(REG_Command_W, PCD_SoftReset); // CommandReg <- 0x0F
                     state <= 8'h01;
@@ -251,6 +314,7 @@ output reg  busy,
 
                 8'h04: begin
                   if (op_done) begin
+                    uid0 <= tmp_reg;  // Store CommandReg read in uid0 for debug (b2)
                     // if PowerDown bit still set -> retry up to 3 times, Arduino-like
                     if (tmp_reg[4] == 1'b1) begin
                       reset_tries <= reset_tries + 1'b1;
@@ -268,7 +332,13 @@ output reg  busy,
                 end
 
                 // Init writes exactly like Arduino PCD_Init()
-                8'h10: if (op_step==3'd0) begin start_write(REG_TxMode_W, 8'h00); state<=8'h11; end
+                // First read Version register to verify SPI communication
+                8'h10: if (op_step==3'd0) begin start_read(REG_Version_R); state<=8'h0D; end
+                8'h0D: if (op_done) begin 
+                    uid3 <= tmp_reg;  // Store version in uid3 for debug display
+                    state<=8'h0E; 
+                end
+                8'h0E: if (op_step==3'd0) begin start_write(REG_TxMode_W, 8'h00); state<=8'h11; end
                 8'h11: if (op_done) begin state<=8'h12; end
                 8'h12: if (op_step==3'd0) begin start_write(REG_RxMode_W, 8'h00); state<=8'h13; end
                 8'h13: if (op_done) begin state<=8'h14; end
@@ -423,20 +493,328 @@ output reg  busy,
 
                 8'h6C: begin
                     // Arduino expects: bufferSize==2 and validBits==0 (RxLastBits=0)
-                    if ((ctrlreg[2:0] == 3'b000) && (fifolvl == 8'd2) && (errreg[4:0] == errreg[4:0])) begin
-                        // We deliberately do NOT over-interpret errreg here; Arduino checks 0x13 later in other paths.
+                    // After valid ATQA, proceed to PICC_Select (anticollision)
+                    if ((ctrlreg[2:0] == 3'b000) && (fifolvl == 8'd2)) begin
                         card_seen <= 1'b1;
-                        unlock    <= 1'b1;
-                        busy      <= 1'b0;
-                        state     <= 8'h6D;
-                        unlock_ms <= 12'd3000;
+                        // Continue to PICC_Select: clear CollReg bit 7 first (Arduino: PCD_ClearRegisterBitMask(CollReg, 0x80))
+                        state <= 8'h70;
                     end else begin
                         state <= 8'h30;
                     end
                 end
 
+                // ======== PICC_Select() - Anticollision/Select sequence ========
+                // Step 1: Read CollReg
+                8'h70: if (op_step==3'd0) begin start_read(REG_Coll_R); state<=8'h71; end
+                8'h71: if (op_done) begin state<=8'h72; end
+                // Step 2: Write CollReg with bit 7 cleared (ValuesAfterColl=1)
+                8'h72: if (op_step==3'd0) begin start_write(REG_Coll_W, tmp_reg & 8'h7F); state<=8'h73; end
+                8'h73: if (op_done) begin state<=8'h74; end
+
+                // ======== ANTICOLLISION command: send SEL_CL1 (0x93), NVB=0x20 ========
+                // Arduino: buffer[0]=0x93, buffer[1]=0x20, txLastBits=0, bufferUsed=2
+                // Transceive: Idle, clear IRQ, flush FIFO, write 2 bytes, BitFraming=0x00, Transceive, StartSend
+                8'h74: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Idle); state<=8'h75; end
+                8'h75: if (op_done) begin state<=8'h76; end
+                8'h76: if (op_step==3'd0) begin start_write(REG_ComIrq_W, 8'h7F); state<=8'h77; end
+                8'h77: if (op_done) begin state<=8'h78; end
+                8'h78: if (op_step==3'd0) begin start_write(REG_FIFOLevel_W, 8'h80); state<=8'h79; end
+                8'h79: if (op_done) begin state<=8'h7A; end
+                // Write SEL_CL1 to FIFO
+                8'h7A: if (op_step==3'd0) begin start_write(REG_FIFOData_W, PICC_CMD_SEL_CL1); state<=8'h7B; end
+                8'h7B: if (op_done) begin state<=8'h7C; end
+                // Write NVB=0x20 to FIFO
+                8'h7C: if (op_step==3'd0) begin start_write(REG_FIFOData_W, 8'h20); state<=8'h7D; end
+                8'h7D: if (op_done) begin state<=8'h7E; end
+                // BitFramingReg = 0x00 (no alignment, full bytes)
+                8'h7E: if (op_step==3'd0) begin start_write(REG_BitFraming_W, 8'h00); state<=8'h7F; end
+                8'h7F: if (op_done) begin state<=8'h80; end
+                // Start Transceive
+                8'h80: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Transceive); state<=8'h81; end
+                8'h81: if (op_done) begin state<=8'h82; end
+                // StartSend: set bit 7 of BitFramingReg
+                8'h82: if (op_step==3'd0) begin start_read(REG_BitFraming_R); state<=8'h83; end
+                8'h83: if (op_done) begin state<=8'h84; end
+                8'h84: if (op_step==3'd0) begin start_write(REG_BitFraming_W, tmp_reg | 8'h80); state<=8'h85; end
+                8'h85: if (op_done) begin poll_ctr<=0; state<=8'h86; end
+
+                // Poll for anticollision response
+                8'h86: if (op_step==3'd0) begin start_read(REG_ComIrq_R); state<=8'h87; end
+                8'h87: if (op_done) begin comirq<=tmp_reg; state<=8'h88; end
+                8'h88: begin
+                    if ((comirq & 8'h30) != 8'h00) begin
+                        state <= 8'h89; // completed
+                    end else if ((comirq & 8'h01) != 8'h00) begin
+                        state <= 8'h30; // timeout
+                    end else begin
+                        poll_ctr <= poll_ctr + 1'b1;
+                        if (poll_ctr == 16'hFFFF) begin
+                            state <= 8'h30;
+                        end else begin
+                            state <= 8'h86;
+                        end
+                    end
+                end
+
+                // Read ErrorReg, check for errors
+                8'h89: if (op_step==3'd0) begin start_read(REG_Error_R); state<=8'h8A; end
+                8'h8A: if (op_done) begin errreg<=tmp_reg; state<=8'h8B; end
+                8'h8B: begin
+                    // Check for BufferOvfl, ParityErr, ProtocolErr (0x13)
+                    if ((errreg & 8'h13) != 8'h00) begin
+                        state <= 8'h30; // error, retry
+                    end else begin
+                        state <= 8'h8C;
+                    end
+                end
+
+                // Read FIFOLevel (should be 5: UID0-3 + BCC)
+                8'h8C: if (op_step==3'd0) begin start_read(REG_FIFOLevel_R); state<=8'h8D; end
+                8'h8D: if (op_done) begin fifolvl<=tmp_reg; state<=8'h8E; end
+                8'h8E: begin
+                    if (fifolvl < 8'd5) begin
+                        state <= 8'h30; // not enough data
+                    end else begin
+                        state <= 8'h8F;
+                    end
+                end
+
+                // Burst read 5 bytes from FIFO (UID0-3 + BCC)
+                // Pattern: send addr, then alternate (dummy, read) pairs
+                8'h8F: begin
+                    if (!xfer_active) begin
+                        spi_cs_0 <= 1'b0;
+                        tx_byte <= REG_FIFOData_R;
+                        start_xfer <= 1'b1;
+                        state <= 8'h90;
+                    end
+                end
+                // SPI is full-duplex: rx_byte from transfer N contains data from transfer N-1
+                // Transfer 1 (0x8F): sent addr, rx = garbage
+                // Transfer 2 (0x90): send addr, rx = uid0 (from xfer 1 - still garbage!)
+                // We need 6 transfers total for 5 data bytes!
+                
+                // 0x90: xfer 1 done (garbage), start xfer 2
+                8'h90: if (xfer_done && !xfer_active) begin
+                    // rx_byte is garbage from first transfer, discard it
+                    tx_byte <= REG_FIFOData_R;  // send addr to clock out uid0
+                    start_xfer <= 1'b1;
+                    state <= 8'h91;
+                end
+                // 0x91: xfer 2 done, rx = uid0
+                8'h91: if (xfer_done && !xfer_active) begin
+                    uid0 <= rx_byte;
+                    tx_byte <= REG_FIFOData_R;
+                    start_xfer <= 1'b1;
+                    state <= 8'h92;
+                end
+                // 0x92: xfer 3 done, rx = uid1
+                8'h92: if (xfer_done && !xfer_active) begin
+                    uid1 <= rx_byte;
+                    tx_byte <= REG_FIFOData_R;
+                    start_xfer <= 1'b1;
+                    state <= 8'h93;
+                end
+                // 0x93: xfer 4 done, rx = uid2
+                8'h93: if (xfer_done && !xfer_active) begin
+                    uid2 <= rx_byte;
+                    tx_byte <= REG_FIFOData_R;
+                    start_xfer <= 1'b1;
+                    state <= 8'h94;
+                end
+                // 0x94: xfer 5 done, rx = uid3
+                8'h94: if (xfer_done && !xfer_active) begin
+                    uid3 <= rx_byte;
+                    tx_byte <= REG_FIFOData_R;  // read BCC from FIFO
+                    start_xfer <= 1'b1;
+                    state <= 8'h95;
+                end
+                // 0x95: xfer 6 done, rx = BCC
+                8'h95: if (xfer_done && !xfer_active) begin
+                    uid_bcc <= rx_byte;
+                    dbg_uid_bcc <= rx_byte;  // Save for debug output
+                    spi_cs_0 <= 1'b1;
+                    state <= 8'h9B;
+                end
+                
+                // One cycle delay for uid_bcc to settle
+                8'h9B: begin
+                    dbg_calc_bcc <= uid0 ^ uid1 ^ uid2 ^ uid3;  // Save calculated BCC
+                    state <= 8'h96;
+                end
+
+                // Verify BCC: should be uid0 ^ uid1 ^ uid2 ^ uid3
+                8'h96: begin
+                    if (uid_bcc == (uid0 ^ uid1 ^ uid2 ^ uid3)) begin
+                        state <= 8'hA0; // BCC OK, continue with SELECT
+                    end else begin
+                        state <= 8'h30; // BCC error, retry
+                    end
+                end
+
+                // ======== SELECT command: send SEL_CL1, NVB=0x70, UID0-3, BCC, CRC ========
+                // First calculate CRC using PCD_CalculateCRC
+
+                // CRC calculation: write 7 bytes to FIFO, run CalcCRC, read result
+                // Step 1: Idle
+                8'hA0: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Idle); state<=8'hA1; end
+                8'hA1: if (op_done) begin state<=8'hA2; end
+                // Step 2: Clear DivIrqReg bit 2 (CRCIRq)
+                8'hA2: if (op_step==3'd0) begin start_write(REG_DivIrq_W, 8'h04); state<=8'hA3; end
+                8'hA3: if (op_done) begin state<=8'hA4; end
+                // Step 3: Flush FIFO
+                8'hA4: if (op_step==3'd0) begin start_write(REG_FIFOLevel_W, 8'h80); state<=8'hA5; end
+                8'hA5: if (op_done) begin state<=8'hA6; end
+                // Step 4: Write 7 bytes to FIFO for CRC: SEL, NVB, UID0-3, BCC
+                8'hA6: if (op_step==3'd0) begin start_write(REG_FIFOData_W, PICC_CMD_SEL_CL1); state<=8'hA7; end
+                8'hA7: if (op_done) begin state<=8'hA8; end
+                8'hA8: if (op_step==3'd0) begin start_write(REG_FIFOData_W, 8'h70); state<=8'hA9; end  // NVB=0x70 (7 bytes)
+                8'hA9: if (op_done) begin state<=8'hAA; end
+                8'hAA: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid0); state<=8'hAB; end
+                8'hAB: if (op_done) begin state<=8'hAC; end
+                8'hAC: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid1); state<=8'hAD; end
+                8'hAD: if (op_done) begin state<=8'hAE; end
+                8'hAE: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid2); state<=8'hAF; end
+                8'hAF: if (op_done) begin state<=8'hB0; end
+                8'hB0: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid3); state<=8'hB1; end
+                8'hB1: if (op_done) begin state<=8'hB2; end
+                8'hB2: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid_bcc); state<=8'hB3; end
+                8'hB3: if (op_done) begin state<=8'hB4; end
+                // Step 5: Start CRC calculation
+                8'hB4: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_CalcCRC); state<=8'hB5; end
+                8'hB5: if (op_done) begin poll_ctr<=0; state<=8'hB6; end
+                // Step 6: Poll DivIrqReg for CRCIRq (bit 2)
+                8'hB6: if (op_step==3'd0) begin start_read(REG_DivIrq_R); state<=8'hB7; end
+                8'hB7: if (op_done) begin
+                    if ((tmp_reg & 8'h04) != 8'h00) begin
+                        state <= 8'hB8; // CRC done
+                    end else begin
+                        poll_ctr <= poll_ctr + 1'b1;
+                        if (poll_ctr == 16'hFFFF) begin
+                            state <= 8'h30; // timeout
+                        end else begin
+                            state <= 8'hB6;
+                        end
+                    end
+                end
+                // Step 7: Stop CRC (Idle)
+                8'hB8: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Idle); state<=8'hB9; end
+                8'hB9: if (op_done) begin state<=8'hBA; end
+                // Step 8: Read CRC result (low byte first)
+                8'hBA: if (op_step==3'd0) begin start_read(REG_CRCResultL_R); state<=8'hBB; end
+                8'hBB: if (op_done) begin crc_lo<=tmp_reg; state<=8'hBC; end
+                8'hBC: if (op_step==3'd0) begin start_read(REG_CRCResultH_R); state<=8'hBD; end
+                8'hBD: if (op_done) begin crc_hi<=tmp_reg; state<=8'hC0; end
+
+                // ======== Now transmit SELECT command with CRC ========
+                // Transceive: SEL, NVB, UID0-3, BCC, CRC_L, CRC_H (9 bytes total)
+                8'hC0: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Idle); state<=8'hC1; end
+                8'hC1: if (op_done) begin state<=8'hC2; end
+                8'hC2: if (op_step==3'd0) begin start_write(REG_ComIrq_W, 8'h7F); state<=8'hC3; end
+                8'hC3: if (op_done) begin state<=8'hC4; end
+                8'hC4: if (op_step==3'd0) begin start_write(REG_FIFOLevel_W, 8'h80); state<=8'hC5; end
+                8'hC5: if (op_done) begin state<=8'hC6; end
+                // Write 9 bytes to FIFO
+                8'hC6: if (op_step==3'd0) begin start_write(REG_FIFOData_W, PICC_CMD_SEL_CL1); state<=8'hC7; end
+                8'hC7: if (op_done) begin state<=8'hC8; end
+                8'hC8: if (op_step==3'd0) begin start_write(REG_FIFOData_W, 8'h70); state<=8'hC9; end
+                8'hC9: if (op_done) begin state<=8'hCA; end
+                8'hCA: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid0); state<=8'hCB; end
+                8'hCB: if (op_done) begin state<=8'hCC; end
+                8'hCC: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid1); state<=8'hCD; end
+                8'hCD: if (op_done) begin state<=8'hCE; end
+                8'hCE: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid2); state<=8'hCF; end
+                8'hCF: if (op_done) begin state<=8'hD0; end
+                8'hD0: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid3); state<=8'hD1; end
+                8'hD1: if (op_done) begin state<=8'hD2; end
+                8'hD2: if (op_step==3'd0) begin start_write(REG_FIFOData_W, uid_bcc); state<=8'hD3; end
+                8'hD3: if (op_done) begin state<=8'hD4; end
+                8'hD4: if (op_step==3'd0) begin start_write(REG_FIFOData_W, crc_lo); state<=8'hD5; end
+                8'hD5: if (op_done) begin state<=8'hD6; end
+                8'hD6: if (op_step==3'd0) begin start_write(REG_FIFOData_W, crc_hi); state<=8'hD7; end
+                8'hD7: if (op_done) begin state<=8'hD8; end
+                // BitFramingReg = 0x00
+                8'hD8: if (op_step==3'd0) begin start_write(REG_BitFraming_W, 8'h00); state<=8'hD9; end
+                8'hD9: if (op_done) begin state<=8'hDA; end
+                // Start Transceive
+                8'hDA: if (op_step==3'd0) begin start_write(REG_Command_W, PCD_Transceive); state<=8'hDB; end
+                8'hDB: if (op_done) begin state<=8'hDC; end
+                // StartSend
+                8'hDC: if (op_step==3'd0) begin start_read(REG_BitFraming_R); state<=8'hDD; end
+                8'hDD: if (op_done) begin state<=8'hDE; end
+                8'hDE: if (op_step==3'd0) begin start_write(REG_BitFraming_W, tmp_reg | 8'h80); state<=8'hDF; end
+                8'hDF: if (op_done) begin poll_ctr<=0; state<=8'hE0; end
+
+                // Poll for SELECT response
+                8'hE0: if (op_step==3'd0) begin start_read(REG_ComIrq_R); state<=8'hE1; end
+                8'hE1: if (op_done) begin comirq<=tmp_reg; state<=8'hE2; end
+                8'hE2: begin
+                    if ((comirq & 8'h30) != 8'h00) begin
+                        state <= 8'hE3;
+                    end else if ((comirq & 8'h01) != 8'h00) begin
+                        state <= 8'h30; // timeout
+                    end else begin
+                        poll_ctr <= poll_ctr + 1'b1;
+                        if (poll_ctr == 16'hFFFF) begin
+                            state <= 8'h30;
+                        end else begin
+                            state <= 8'hE0;
+                        end
+                    end
+                end
+
+                // Check errors
+                8'hE3: if (op_step==3'd0) begin start_read(REG_Error_R); state<=8'hE4; end
+                8'hE4: if (op_done) begin errreg<=tmp_reg; state<=8'hE5; end
+                8'hE5: begin
+                    if ((errreg & 8'h13) != 8'h00) begin
+                        state <= 8'h30;
+                    end else begin
+                        state <= 8'hE6;
+                    end
+                end
+
+                // Read FIFOLevel (should be 3: SAK + 2 CRC bytes)
+                8'hE6: if (op_step==3'd0) begin start_read(REG_FIFOLevel_R); state<=8'hE7; end
+                8'hE7: if (op_done) begin fifolvl<=tmp_reg; state<=8'hE8; end
+                8'hE8: begin
+                    if (fifolvl < 8'd3) begin
+                        state <= 8'h30;
+                    end else begin
+                        state <= 8'hE9;
+                    end
+                end
+
+                // Read ControlReg for validBits
+                8'hE9: if (op_step==3'd0) begin start_read(REG_Control_R); state<=8'hEA; end
+                8'hEA: if (op_done) begin ctrlreg<=tmp_reg; state<=8'hEB; end
+                8'hEB: begin
+                    // SAK must be exactly 24 bits (3 bytes, no extra bits)
+                    if ((ctrlreg[2:0] != 3'b000) || (fifolvl != 8'd3)) begin
+                        state <= 8'h30;
+                    end else begin
+                        state <= 8'hEC;
+                    end
+                end
+
+                // Read SAK (1 byte)
+                8'hEC: if (op_step==3'd0) begin start_read(REG_FIFOData_R); state<=8'hED; end
+                8'hED: if (op_done) begin sak<=tmp_reg; state<=8'hEE; end
+
+                // SUCCESS! Card UID read complete
+                8'hEE: begin
+                    // Check if cascade bit is set (bit 2) - UID not complete
+                    // For simplicity, we only support single-size (4-byte) UIDs
+                    // If SAK[2]==1, would need CL2, but we ignore this case
+                    card_uid <= {uid0, uid1, uid2, uid3};
+                    unlock    <= 1'b1;
+                    busy      <= 1'b0;
+                    unlock_ms <= 12'd3000;
+                    state     <= 8'hEF;
+                end
+
                 // hold unlocked (you can change this to pulse if you want)
-                8'h6D: begin
+                8'hEF: begin
                   busy <= 1'b0;
 
                   // countdown in ms using the ms_tick we already added

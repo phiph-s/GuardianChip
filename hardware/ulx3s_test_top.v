@@ -22,7 +22,7 @@ module ulx3s_test_top (
     output wire [7:0]  led
 );
 
-    wire rst = btn[0];
+    wire rst = btn[1];  // Use btn[1] for reset (btn[0] used for debug)
 
     // ------------------------------------------------------------------------
     // PLL: 25 MHz -> 32 MHz (MFRC522 logic expects 32 MHz)
@@ -91,8 +91,16 @@ module ulx3s_test_top (
     // ------------------------------------------------------------------------
     // MFRC522 detector core (chip-select + protocol FSM)
     // ------------------------------------------------------------------------
-    wire [7:0] dbg_state_unused;
-    wire [7:0] dbg_prev_state_unused;
+    wire [7:0] dbg_state;
+    wire [7:0] dbg_prev_state;
+    wire [31:0] card_uid;
+    wire [7:0] dbg_uid_bcc;
+    wire [7:0] dbg_calc_bcc;
+    wire [7:0] dbg_uid0;
+    wire [7:0] dbg_uid1;
+    wire [7:0] dbg_uid2;
+    wire [7:0] dbg_uid3;
+    wire [7:0] dbg_comirq;
 
     nfc_card_detector #(
         .CLK_HZ(32_000_000),
@@ -114,8 +122,17 @@ module ulx3s_test_top (
         .card_seen(),
         .unlock(unlock),
 
-        .dbg_state(dbg_state_unused),
-        .dbg_prev_state(dbg_prev_state_unused)
+        .dbg_state(dbg_state),
+        .dbg_prev_state(dbg_prev_state),
+        .max_state(max_state),
+        .card_uid(card_uid),
+        .dbg_uid_bcc(dbg_uid_bcc),
+        .dbg_calc_bcc(dbg_calc_bcc),
+        .dbg_uid0(dbg_uid0),
+        .dbg_uid1(dbg_uid1),
+        .dbg_uid2(dbg_uid2),
+        .dbg_uid3(dbg_uid3),
+        .dbg_comirq(dbg_comirq)
     );
 
     // TODO: EEPROM chip-select + SPI transactions
@@ -125,8 +142,32 @@ module ulx3s_test_top (
     assign uart_txd = 1'b1;
     assign mode     = 1'b0;
 
-    // Minimal LED status
-    // [7]=hard_fault, [6]=unlock, [5]=busy, [4]=pll_lock, [3:0]=buttons[4:1]
-    assign led = {hard_fault, unlock, busy, pll_lock, btn[4:1]};
+    // Debug LED status - show MAX state reached on LEDs
+    // This freezes at the highest state we reached before looping back
+    wire [7:0] max_state;
+    
+    // Auto-cycling display - changes every ~0.5 second (at 32MHz)
+    reg [24:0] display_counter;
+    reg [2:0] display_sel;
+    always @(posedge clk_32mhz) begin
+        display_counter <= display_counter + 1;
+        if (display_counter == 0)
+            display_sel <= display_sel + 1;
+    end
+    
+    // LED display with multiple debug views
+    // Use active-high joystick: btn[3]=UP, btn[4]=DOWN, btn[5]=LEFT, btn[6]=RIGHT
+    // btn[3] (UP) = current state
+    // btn[4] (DOWN) = comirq  
+    // btn[5] (LEFT) = received BCC (uid_bcc)
+    // btn[6] (RIGHT) = calculated BCC (calc_bcc)
+    // btn[5]+btn[6] (LEFT+RIGHT) = uid0
+    // nothing = max_state
+    assign led = (btn[5] && btn[6]) ? dbg_uid0 :
+                 btn[3] ? dbg_state :
+                 btn[4] ? dbg_comirq :
+                 btn[5] ? dbg_uid_bcc :
+                 btn[6] ? dbg_calc_bcc :
+                 max_state;
 
 endmodule
